@@ -15,6 +15,7 @@ const (
 	DeviceDownstreamGate DeviceKind = "downstream_gate"
 	DeviceFillValve      DeviceKind = "fill_valve"
 	DeviceDrainValve     DeviceKind = "drain_valve"
+	DeviceLevelProbe     DeviceKind = "level_probe"
 )
 
 type CommandState string
@@ -101,9 +102,16 @@ const (
 
 func (p GatePosition) Sealed() bool { return p == GateClosed }
 
+// LevelSample is one calibrated probe value admitted to a transit level window.
+// Samples only enter windows after verification, so CalibVer is always the
+// calibration version that backs the meters value.
 type LevelSample struct {
 	CycleID    uuid.UUID `json:"cycle_id"`
 	Generation uint64    `json:"generation"`
+	ChamberID  string    `json:"chamber_id"`
+	PointID    string    `json:"point_id"`
+	DeviceID   string    `json:"device_id"`
+	CalibVer   string    `json:"calibration_version"`
 	Meters     float64   `json:"meters"`
 	ObservedAt time.Time `json:"observed_at"`
 }

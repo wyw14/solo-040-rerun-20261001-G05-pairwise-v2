@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>LockFlow 水位校核</title><link rel="stylesheet" href="/assets/styles.css"></head>
+<body><header><div class="brand"><span class="brand-mark">LF</span>LockFlow</div><nav><a href="/operations">Operations</a><a href="/chamber">Chamber</a><a href="/interlocks">Interlocks</a><a aria-current="page" href="/verification">水位校核</a><a href="/incidents">Incidents</a></nav></header>
+<main><div class="page-title"><div><h1>水位读数校核</h1><div class="muted">测点登记 · 校准版本 · 人工尺读 · 偏差比对（仅可信读数进入水位窗口与开闸联锁）</div></div><select id="chamber"></select></div>
+<div class="message" id="message"></div>
+<div class="grid">
+<section class="panel"><h2>登记测点</h2>
+<form id="point-form" class="stack"><label>测点编号 <input name="point_id" placeholder="staff-1" required></label><label>绑定探头设备 <input name="device_id" placeholder="probe-1" required></label><label>名称 <input name="label" placeholder="上游侧水尺"></label><label>零点基准 <input name="zero_datum" placeholder="黄海高程"></label><button>登记测点</button></form></section>
+<section class="panel"><h2>登记校准版本（不可变）</h2>
+<form id="cal-form" class="stack"><label>探头设备 <input name="device_id" placeholder="probe-1" required></label><label>版本 <input name="version" placeholder="cal-2026-09" required></label><label>偏移 (m) <input name="offset_m" type="number" step="0.001" value="0"></label><label>系数 <input name="scale" type="number" step="0.001" value="1"></label><label>生效时间 <input name="effective_from" type="datetime-local"></label><label>备注（检修说明） <input name="note"></label><button>追加校准版本</button></form></section>
+<section class="panel"><h2>人工尺读</h2>
+<form id="staff-form" class="stack"><label>测点 <input name="point_id" placeholder="staff-1" required></label><label>水位 (m) <input name="meters" type="number" step="0.01" required></label><label>观测时间 <input name="observed_at" type="datetime-local"></label><label>读尺人 <input name="reader"></label><button>提交尺读</button></form></section>
+<section class="panel"><h2>探头读数上报</h2>
+<form id="reading-form" class="stack"><label>测点 <input name="point_id" placeholder="staff-1" required></label><label>原始读数 (m) <input name="raw_meters" type="number" step="0.01" required></label><label>观测时间（留空=现在） <input name="observed_at" type="datetime-local"></label><label class="muted">自动挂接到当前闸次；偏差 ≤0.02m 且 10 分钟内有尺读才标记可信</label><button>上报并校核</button></form></section>
+<section class="panel wide"><h2>校核读数</h2><table id="readings"><thead><tr><th>时间</th><th>测点</th><th>校准版本</th><th>探头(m)</th><th>尺读(m)</th><th>偏差(m)</th><th>状态</th><th>说明</th><th></th></tr></thead><tbody></tbody></table></section>
+<section class="panel"><h2>校准版本历史</h2><table id="calibrations"><thead><tr><th>版本</th><th>设备</th><th>生效</th><th>偏移/系数</th></tr></thead><tbody></tbody></table></section>
+<section class="panel"><h2>人工尺读记录</h2><table id="staff"><thead><tr><th>时间</th><th>测点</th><th>水位(m)</th><th>读尺人</th></tr></thead><tbody></tbody></table></section>
+</div></main>
+<script src="/assets/app.js"></script><script>
+const {api,setMessage,withBusy}=window.LockFlow;
+const message=document.querySelector('#message'); const chamberSelect=document.querySelector('#chamber');
+const fmt=(v)=>v===null||v===undefined||v===''?'-':String(v);
+const fmtTime=(v)=>v?new Date(v).toLocaleString():'-';
+const formObject=(form)=>Object.fromEntries(new FormData(form).entries());
+const localOrBlank=(value)=>value?new Date(value).toISOString():'';
+function bindForm(id,build){const form=document.querySelector(id);form.addEventListener('submit',async(e)=>{e.preventDefault();const body=build(formObject(form));await withBusy(form.querySelector('button'),async()=>{try{await api(`/api/chambers/${chamberSelect.value}${id==='#point-form'?'/level/points':id==='#cal-form'?'/level/calibrations':id==='#staff-form'?'/level/staff':'/level/readings'}`,{method:'POST',body:JSON.stringify(body)});form.reset();setMessage(message,'已提交');await load();}catch(err){setMessage(message,err.message);}});});}
+bindForm('#point-form',(v)=>({point_id:v.point_id,device_id:v.device_id,label:v.label,zero_datum:v.zero_datum}));
+bindForm('#cal-form',(v)=>({device_id:v.device_id,version:v.version,offset_m:Number(v.offset_m)||0,scale:Number(v.scale)||1,effective_from:v.effective_from?new Date(v.effective_from).toISOString():undefined,note:v.note}));
+bindForm('#staff-form',(v)=>({point_id:v.point_id,meters:Number(v.meters),observed_at:v.observed_at?new Date(v.observed_at).toISOString():undefined,reader:v.reader}));
+bindForm('#reading-form',(v)=>({point_id:v.point_id,raw_meters:Number(v.raw_meters),observed_at:v.observed_at?new Date(v.observed_at).toISOString():undefined}));
+async function review(id,trusted){const reason=prompt(trusted?'复核转可信，请填写依据（尺读号/复核人）':'保持待复核的原因');if(reason===null)return;try{await api(`/api/level/readings/${id}/review`,{method:'POST',body:JSON.stringify({trusted,reason})});await load();}catch(e){setMessage(message,e.message);}}
+async function load(){const c=chamberSelect.value;if(!c)return;const [readings,cals,staff]=await Promise.all([api(`/api/chambers/${c}/level/readings`),api(`/api/chambers/${c}/level/calibrations`),api(`/api/chambers/${c}/level/staff`)]);
+document.querySelector('#readings tbody').innerHTML=readings.slice().reverse().map((r)=>`<tr><td>${fmtTime(r.observed_at)}</td><td>${fmt(r.point_id)}</td><td>${fmt(r.calibration_version)}</td><td>${fmt(Number(r.meters).toFixed(3))}</td><td>${r.staff_meters==null?'-':Number(r.staff_meters).toFixed(3)}</td><td>${r.deviation_m?Number(r.deviation_m).toFixed(3):'-'}</td><td><span class="badge ${r.trust==='trusted'?'ok':'warn'}">${r.trust==='trusted'?'可信':'待复核'}</span></td><td>${fmt(r.review_reason)}</td><td>${r.trust==='trusted'?'':`<button data-trust="${r.id}">复核可信</button>`}</td></tr>`).join('');
+document.querySelector('#readings tbody').querySelectorAll('[data-trust]').forEach((b)=>b.addEventListener('click',()=>review(b.dataset.trust,true)));
+document.querySelector('#calibrations tbody').innerHTML=cals.map((k)=>`<tr><td>${fmt(k.version)}</td><td>${fmt(k.device_id)}</td><td>${fmtTime(k.effective_from)}</td><td>${k.offset_m} / ${k.scale}</td></tr>`).join('');
+document.querySelector('#staff tbody').innerHTML=staff.slice().reverse().map((s)=>`<tr><td>${fmtTime(s.observed_at)}</td><td>${fmt(s.point_id)}</td><td>${Number(s.meters).toFixed(3)}</td><td>${fmt(s.reader)}</td></tr>`).join('');}
+async function init(){const chambers=await api('/api/chambers');chamberSelect.innerHTML=chambers.map((c)=>`<option>${c.chamber_id}</option>`).join('');chamberSelect.addEventListener('change',()=>load().catch((e)=>setMessage(message,e.message)));await load();}
+init().catch((e)=>setMessage(message,e.message));
+</script></body></html>

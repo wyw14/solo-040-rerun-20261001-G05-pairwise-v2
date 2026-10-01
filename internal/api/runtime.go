@@ -16,6 +16,7 @@ import (
 	"github.com/wyw14/cry-96/internal/safety"
 	"github.com/wyw14/cry-96/internal/schedule"
 	"github.com/wyw14/cry-96/internal/signal"
+	"github.com/wyw14/cry-96/internal/verification"
 )
 
 // Runtime contains the long-lived component graph used by HTTP handlers.
@@ -33,6 +34,8 @@ type Runtime struct {
 	Planner         *schedule.Planner
 	Schedule        *schedule.Service
 	Hydraulics      *hydraulics.Controller
+	Verification    *verification.Service
+	VerifyRestore   *verification.Restore
 	Interlocks      *interlock.Coordinator
 	Cycles          *cycle.Coordinator
 	CycleService    *cycle.Service
@@ -71,37 +74,46 @@ func NewRuntime(ctx context.Context, dataDirectory string) (*Runtime, error) {
 	scheduleService := schedule.NewService(planner, signalPublisher)
 	ramp := hydraulics.NewRamp(25*time.Millisecond, now)
 	hydraulicsController := hydraulics.NewController(gateCommands, recorder, ramp, now)
+	verificationService := verification.NewService(recorder, verification.Config{
+		DeviationToleranceM: verification.DefaultDeviationToleranceM,
+		CompareWindow:       verification.DefaultCompareWindow,
+	}, now)
 	barrier := safety.NewBarrier()
 	var safetyCoordinator *safety.Coordinator
-	levelByChamber := func(chamberID string) float64 {
-		samples := hydraulicsController.WindowSamples(chamberID)
-		if len(samples) == 0 {
-			return 0
-		}
-		return samples[len(samples)-1].Meters
+	trustedLevelByChamber := func(chamberID string) (model.LevelSample, bool) {
+		return hydraulicsController.TrustedSample(chamberID)
 	}
 	emergencyActive := func(chamberID string) bool {
 		return safetyCoordinator != nil && safetyCoordinator.Active(chamberID)
 	}
 	interlockCoordinator := interlock.NewCoordinator(
 		interlock.DefaultPolicy(), interlock.NewArbiter(), gateController,
-		levelByChamber, emergencyActive,
+		trustedLevelByChamber, emergencyActive,
 	)
 	cycleCoordinator := cycle.NewCoordinator(gateController, hydraulicsController, recorder, now)
 	cycleService := cycle.NewService(cycleCoordinator, admissionService)
 	safetyCoordinator = safety.NewCoordinator(gateCommands, barrier, recorder, now)
 	safetyService := safety.NewService(safetyCoordinator, cycleCoordinator)
 	signalService.BindTransitLookup(cycleCoordinator)
+	for _, chamberID := range chambers {
+		if err := verificationService.BindSink(chamberID, hydraulicsController); err != nil {
+			return nil, err
+		}
+	}
 	replayer := journal.NewReplayer(store)
 	recovery := cycle.NewRecovery(replayer, cycleCoordinator)
 	if _, err := recovery.RestoreAll(ctx); err != nil {
+		return nil, err
+	}
+	verifyRestore := verification.NewRestore(store, verificationService)
+	if err := verifyRestore.RestoreAll(ctx); err != nil {
 		return nil, err
 	}
 	health := monitor.NewHealthRegistry()
 	for _, chamberID := range chambers {
 		for _, device := range []model.DeviceKind{
 			model.DeviceUpstreamGate, model.DeviceDownstreamGate,
-			model.DeviceFillValve, model.DeviceDrainValve,
+			model.DeviceFillValve, model.DeviceDrainValve, model.DeviceLevelProbe,
 		} {
 			health.Observe(chamberID, device, true, "telemetry current", now())
 		}
@@ -112,6 +124,7 @@ func NewRuntime(ctx context.Context, dataDirectory string) (*Runtime, error) {
 		SignalStore: signalStore, SignalPublisher: signalPublisher, Signals: signalService,
 		AdmissionQueue: admissionController.Queue(), Admission: admissionService,
 		Planner: planner, Schedule: scheduleService, Hydraulics: hydraulicsController,
+		Verification: verificationService, VerifyRestore: verifyRestore,
 		Interlocks: interlockCoordinator, Cycles: cycleCoordinator, CycleService: cycleService,
 		Leases: leaseService, LeaseSweeper: leaseSweeper, Safety: safetyService,
 		Snapshot:  monitor.NewSnapshot(cycleCoordinator, gateState, admissionService, signalService, safetyService, now),

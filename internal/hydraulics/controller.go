@@ -55,6 +55,22 @@ func (c *Controller) BeginLeveling(cycle model.TransitCycle) error {
 	return nil
 }
 
+// AcceptTrusted implements verification.TrustedReadingSink. Reports reach the
+// level window only after they have been marked trusted together with the
+// calibration version that produced them. A reading for a transit generation
+// that no longer owns the window is refused; it stays on record as evidence
+// but cannot move operations.
+func (c *Controller) AcceptTrusted(reading model.VerifiedReading) error {
+	window, err := c.windowForCycle(reading.CycleID, reading.Generation)
+	if err != nil {
+		return model.ErrReadingNotCurrentGeneration
+	}
+	return window.Add(reading.LevelSample())
+}
+
+// Observe feeds an already verified sample into the active window directly.
+// Callers must go through the verification service; this entry point exists
+// for recovery paths that already hold a trusted sample.
 func (c *Controller) Observe(sample model.LevelSample) (bool, error) {
 	window, err := c.windowForCycle(sample.CycleID, sample.Generation)
 	if err != nil {
@@ -104,4 +120,14 @@ func (c *Controller) WindowSamples(chamberID string) []model.LevelSample {
 		return nil
 	}
 	return window.Samples()
+}
+
+// TrustedSample returns the most recent trusted window sample for a chamber.
+// Interlocks consume this value rather than raw reports.
+func (c *Controller) TrustedSample(chamberID string) (model.LevelSample, bool) {
+	samples := c.WindowSamples(chamberID)
+	if len(samples) == 0 {
+		return model.LevelSample{}, false
+	}
+	return samples[len(samples)-1], true
 }

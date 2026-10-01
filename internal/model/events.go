@@ -22,6 +22,12 @@ const (
 	EventEmergencyStarted EventType = "emergency.started"
 	EventEmergencySettled EventType = "emergency.settled"
 	EventReplayWarning    EventType = "replay.warning"
+
+	EventPointRegistered  EventType = "level.point_registered"
+	EventCalibrationAdded EventType = "level.calibration_added"
+	EventStaffRecorded    EventType = "level.staff_recorded"
+	EventReadingVerified  EventType = "level.reading_verified"
+	EventReadingReviewed  EventType = "level.reading_reviewed"
 )
 
 type Event struct {

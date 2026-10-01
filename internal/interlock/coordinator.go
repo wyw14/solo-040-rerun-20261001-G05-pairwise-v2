@@ -14,27 +14,33 @@ type Coordinator struct {
 	policy    Policy
 	arbiter   *Arbiter
 	gates     *gate.Controller
-	level     func(string) float64
+	trusted   func(string) (model.LevelSample, bool)
 	emergency func(string) bool
 }
 
-func NewCoordinator(policy Policy, arbiter *Arbiter, gates *gate.Controller, level func(string) float64, emergency func(string) bool) *Coordinator {
-	return &Coordinator{policy: policy, arbiter: arbiter, gates: gates, level: level, emergency: emergency}
+// NewCoordinator wires the interlock to a trusted-level provider. The provider
+// must return only verified readings (see hydraulics.Controller.TrustedSample);
+// raw reported levels never reach the interlock.
+func NewCoordinator(policy Policy, arbiter *Arbiter, gates *gate.Controller, trustedLevel func(string) (model.LevelSample, bool), emergency func(string) bool) *Coordinator {
+	return &Coordinator{policy: policy, arbiter: arbiter, gates: gates, trusted: trustedLevel, emergency: emergency}
 }
 
 func (c *Coordinator) Snapshot(chamberID string) EquipmentSnapshot {
-	level := 0.0
-	if c.level != nil {
-		level = c.level(chamberID)
-	}
-	emergency := false
-	if c.emergency != nil {
-		emergency = c.emergency(chamberID)
-	}
-	return EquipmentSnapshot{
+	snapshot := EquipmentSnapshot{
 		ChamberID: chamberID, Gates: c.gates.State().Snapshot(chamberID),
-		LevelM: level, Emergency: emergency,
 	}
+	if c.trusted != nil {
+		if sample, ok := c.trusted(chamberID); ok {
+			snapshot.LevelM = sample.Meters
+			snapshot.LevelTrusted = true
+			snapshot.CalibrationVersion = sample.CalibVer
+			snapshot.LevelObservedAt = sample.ObservedAt
+		}
+	}
+	if c.emergency != nil {
+		snapshot.Emergency = c.emergency(chamberID)
+	}
+	return snapshot
 }
 
 func (c *Coordinator) RequestOpen(ctx context.Context, cycle model.TransitCycle, direction model.Direction, owner string) (model.DeviceCommand, error) {

@@ -2,15 +2,22 @@ package interlock
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/wyw14/cry-96/internal/model"
 )
 
+// EquipmentSnapshot carries only verified level evidence. LevelTrusted is false
+// until the verification service has cleared a reading for the chamber, in
+// which case opening a gate is refused rather than guessing a level.
 type EquipmentSnapshot struct {
-	ChamberID string
-	Gates     map[model.Direction]model.GatePosition
-	LevelM    float64
-	Emergency bool
+	ChamberID          string
+	Gates              map[model.Direction]model.GatePosition
+	LevelM             float64
+	LevelTrusted       bool
+	CalibrationVersion string
+	LevelObservedAt    time.Time
+	Emergency          bool
 }
 
 type Policy struct {
@@ -24,8 +31,11 @@ func (p Policy) ValidateOpen(snapshot EquipmentSnapshot, direction model.Directi
 	if snapshot.Emergency {
 		return fmt.Errorf("interlock emergency active chamber=%s", snapshot.ChamberID)
 	}
+	if !snapshot.LevelTrusted {
+		return fmt.Errorf("no trusted verified level reading for chamber=%s", snapshot.ChamberID)
+	}
 	if snapshot.LevelM < p.MinimumLevel || snapshot.LevelM > p.MaximumLevel {
-		return fmt.Errorf("water level %.2f outside safe window", snapshot.LevelM)
+		return fmt.Errorf("water level %.2f (calibration %s) outside safe window", snapshot.LevelM, snapshot.CalibrationVersion)
 	}
 	opposite := snapshot.Gates[direction.Opposite()]
 	if opposite != model.GateClosed {

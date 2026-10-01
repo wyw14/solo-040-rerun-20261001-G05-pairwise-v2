@@ -40,6 +40,9 @@ func (w *LevelWindow) Add(sample model.LevelSample) error {
 	if sample.CycleID != w.cycleID || sample.Generation != w.generation {
 		return errors.New("sample belongs to another transit generation")
 	}
+	if sample.CalibVer == "" {
+		return errors.New("window accepts only verified readings with a calibration version")
+	}
 	w.samples = append(w.samples, sample)
 	if len(w.samples) > w.capacity {
 		w.samples = append([]model.LevelSample(nil), w.samples[len(w.samples)-w.capacity:]...)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/wyw14/cry-96/internal/admission"
 	"github.com/wyw14/cry-96/internal/cycle"
 	"github.com/wyw14/cry-96/internal/gate"
@@ -11,6 +12,7 @@ import (
 	"github.com/wyw14/cry-96/internal/interlock"
 	"github.com/wyw14/cry-96/internal/journal"
 	"github.com/wyw14/cry-96/internal/lease"
+	"github.com/wyw14/cry-96/internal/levelcheck"
 	"github.com/wyw14/cry-96/internal/model"
 	"github.com/wyw14/cry-96/internal/monitor"
 	"github.com/wyw14/cry-96/internal/safety"
@@ -33,6 +35,7 @@ type Runtime struct {
 	Planner         *schedule.Planner
 	Schedule        *schedule.Service
 	Hydraulics      *hydraulics.Controller
+	LevelCheck      *levelcheck.Service
 	Interlocks      *interlock.Coordinator
 	Cycles          *cycle.Coordinator
 	CycleService    *cycle.Service
@@ -71,14 +74,28 @@ func NewRuntime(ctx context.Context, dataDirectory string) (*Runtime, error) {
 	scheduleService := schedule.NewService(planner, signalPublisher)
 	ramp := hydraulics.NewRamp(25*time.Millisecond, now)
 	hydraulicsController := hydraulics.NewController(gateCommands, recorder, ramp, now)
+	levelCheck := levelcheck.NewService(recorder, levelcheck.Config{}, now)
+	levelCheck.BindSink(func(reading model.VerifiedReading) {
+		if reading.CycleID == uuid.Nil {
+			return
+		}
+		// Only trusted readings enter the leveling window; a missing window
+		// just means the transit is not leveling right now.
+		_, _ = hydraulicsController.Observe(model.LevelSample{
+			CycleID: reading.CycleID, Generation: reading.Generation,
+			Meters: reading.CorrectedMeters, ObservedAt: reading.ObservedAt,
+		})
+	})
 	barrier := safety.NewBarrier()
 	var safetyCoordinator *safety.Coordinator
-	levelByChamber := func(chamberID string) float64 {
-		samples := hydraulicsController.WindowSamples(chamberID)
-		if len(samples) == 0 {
-			return 0
+	levelByChamber := func(chamberID string) interlock.LevelReading {
+		reading, ok := levelCheck.LatestTrusted(chamberID)
+		if !ok {
+			return interlock.LevelReading{}
 		}
-		return samples[len(samples)-1].Meters
+		return interlock.LevelReading{
+			Meters: reading.CorrectedMeters, Trusted: true, Version: reading.Version,
+		}
 	}
 	emergencyActive := func(chamberID string) bool {
 		return safetyCoordinator != nil && safetyCoordinator.Active(chamberID)
@@ -93,8 +110,12 @@ func NewRuntime(ctx context.Context, dataDirectory string) (*Runtime, error) {
 	safetyService := safety.NewService(safetyCoordinator, cycleCoordinator)
 	signalService.BindTransitLookup(cycleCoordinator)
 	replayer := journal.NewReplayer(store)
-	recovery := cycle.NewRecovery(replayer, cycleCoordinator)
-	if _, err := recovery.RestoreAll(ctx); err != nil {
+	cycleRecovery := cycle.NewRecovery(replayer, cycleCoordinator)
+	if _, err := cycleRecovery.RestoreAll(ctx); err != nil {
+		return nil, err
+	}
+	levelRecovery := levelcheck.NewRecovery(replayer, levelCheck)
+	if err := levelRecovery.RestoreAll(ctx); err != nil {
 		return nil, err
 	}
 	health := monitor.NewHealthRegistry()
@@ -112,10 +133,11 @@ func NewRuntime(ctx context.Context, dataDirectory string) (*Runtime, error) {
 		SignalStore: signalStore, SignalPublisher: signalPublisher, Signals: signalService,
 		AdmissionQueue: admissionController.Queue(), Admission: admissionService,
 		Planner: planner, Schedule: scheduleService, Hydraulics: hydraulicsController,
+		LevelCheck: levelCheck,
 		Interlocks: interlockCoordinator, Cycles: cycleCoordinator, CycleService: cycleService,
 		Leases: leaseService, LeaseSweeper: leaseSweeper, Safety: safetyService,
 		Snapshot:  monitor.NewSnapshot(cycleCoordinator, gateState, admissionService, signalService, safetyService, now),
-		Incidents: monitor.NewIncidentReview(store), Health: health, Recovery: recovery,
+		Incidents: monitor.NewIncidentReview(store), Health: health, Recovery: cycleRecovery,
 		Chambers: chambers, Now: now,
 	}, nil
 }

@@ -9,21 +9,29 @@ import (
 	"github.com/wyw14/cry-96/internal/model"
 )
 
+// LevelReading is the verified water level a chamber currently has, sourced
+// from the levelcheck registry. Only trusted readings carry a version.
+type LevelReading struct {
+	Meters  float64
+	Trusted bool
+	Version uint64
+}
+
 // Coordinator keeps policy evaluation and command reservation in one flow.
 type Coordinator struct {
 	policy    Policy
 	arbiter   *Arbiter
 	gates     *gate.Controller
-	level     func(string) float64
+	level     func(string) LevelReading
 	emergency func(string) bool
 }
 
-func NewCoordinator(policy Policy, arbiter *Arbiter, gates *gate.Controller, level func(string) float64, emergency func(string) bool) *Coordinator {
+func NewCoordinator(policy Policy, arbiter *Arbiter, gates *gate.Controller, level func(string) LevelReading, emergency func(string) bool) *Coordinator {
 	return &Coordinator{policy: policy, arbiter: arbiter, gates: gates, level: level, emergency: emergency}
 }
 
 func (c *Coordinator) Snapshot(chamberID string) EquipmentSnapshot {
-	level := 0.0
+	var level LevelReading
 	if c.level != nil {
 		level = c.level(chamberID)
 	}
@@ -33,7 +41,8 @@ func (c *Coordinator) Snapshot(chamberID string) EquipmentSnapshot {
 	}
 	return EquipmentSnapshot{
 		ChamberID: chamberID, Gates: c.gates.State().Snapshot(chamberID),
-		LevelM: level, Emergency: emergency,
+		LevelM: level.Meters, LevelTrusted: level.Trusted, LevelVersion: level.Version,
+		Emergency: emergency,
 	}
 }
 
